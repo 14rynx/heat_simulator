@@ -1,4 +1,4 @@
-from math import ceil
+from math import ceil, floor, exp
 
 
 class Module:
@@ -26,22 +26,16 @@ class Module:
     def ending_cycle_at(self, tick):
         for start, end in self.pairs:
             if start <= tick <= end:
-                next_cycle_precise = start
-                next_cycle_round = start
-                while next_cycle_round < end + self.cycle_time and next_cycle_round < tick:
-                    next_cycle_precise += self.cycle_time
-                    next_cycle_round = ceil(next_cycle_precise)
-
-                if next_cycle_round == tick:
-                    return True
-                else:
-                    return False
-
+                cycle_end = (tick - start) % self.cycle_time
+                return cycle_end < 1
         return False
 
     @property
     def last_activity(self):
-        return self.pairs[-1][1] + 1
+        if len(self.pairs) > 0:
+            return self.pairs[-1][1] + 1
+        else:
+            return 0
 
 
 class DiscreteChance:
@@ -76,6 +70,9 @@ class DiscreteChance:
     def chance_under(self, value):
         return sum([chance for level, chance in self.points.items() if level < value])
 
+    def chance_over(self, value):
+        return sum([chance for level, chance in self.points.items() if level > value])
+
     def __str__(self):
         ret = []
         for level, chance in self.points.items():
@@ -96,35 +93,37 @@ class Rack:
         self.start_rack_heat = start_rack_heat
 
         if not attenuation:
-            factor_dict = {
-                8: 0.82,
-                7: 0.79,
-                6: 0.76,
-                5: 0.71,
-                4: 0.63,
-                3: 0.50,
-                2: 0.25,
-                1: 1
-            }
-
-            self.attenuation = factor_dict[self.slots]
+            if self.slots > 1:
+                self.attenuation = 0.25 ** (1 / (self.slots - 1))
+            else:
+                self.attenuation = 0
         else:
             self.attenuation = attenuation
 
     def simulate(self):
         rack_heat = self.start_rack_heat
-        chance_statistics = [DiscreteChance()] * self.slots
+        chance_statistics = [DiscreteChance() for _ in range(self.slots)]
 
         for tick in range(1, max([m.last_activity for m in self.modules])):
-            # Do heat dissipation # TODO: Does immediate heat also get dissipated ?
-            rack_heat *= 0.99
-
-            # And generate heat by active modules
+            heat_influx = 0
             for module in self.modules:  # TODO Optimise activity calculation
                 if module.active_at(tick - 1):
-                    rack_heat += module.heat_generation * self.ship_heat_generation_modifier
-            rack_heat = min(1.00, rack_heat)  # Limit rack heat to 1.0
-            print(f"Tick: {tick}, Rack Heat: {rack_heat:.3f}", end=" ")
+                    heat_influx += module.heat_generation * self.ship_heat_generation_modifier
+
+            # Do heat dissipation, with factoring in new heat generation
+            # https://wiki.eveuniversity.org/Overheating 1% exponential decay
+
+            # h'(t) = u -0.01 * h(t), h(0) = k
+            # -> h(t) = e^(-0.01 * t) * (k - 100 u) + 100 u
+            # -> h(1) = e^(-0.01) * (k - 100 u) + 100 u
+            # h: rack_heat
+            # u: heat_influx
+            # k: previous rack_heat
+            # (https://www.wolframalpha.com/input?i2d=true&i=h%27%5C%2840%29t%5C%2841%29+%3D+u+-0.01+h%5C%2840%29t%5C%2841%29%5C%2844%29+h%5C%2840%290%5C%2841%29+%3D+k)
+            rack_heat = exp(-0.01) * (rack_heat - 100 * heat_influx) + 100 * heat_influx
+
+            # Limit rack heat to 1.0
+            rack_heat = min(1.00, rack_heat)
 
             # Now calculate damage probabilities
             for module_position, module in enumerate(self.modules):
@@ -132,23 +131,41 @@ class Rack:
                     for chance_position, chance_statistic in enumerate(chance_statistics):
                         position_chance_modifier = self.attenuation ** (abs(module_position - chance_position))
                         damage_chance = rack_heat * position_chance_modifier * self.ship_chance_modifier * self.filled_chance_modifier
+                        if module_position == chance_position:
+                            # Module damages itself which implies it is not burnt
+                            chance_statistic.add(damage_chance, module.heat_damage)
+                        else:
+                            # Module damages another module, the chance that that can happen depends on this module being burnt as well
+                            damage_chance *= chance_statistics[module_position].chance_under(40)
+                            chance_statistic.add(damage_chance, module.heat_damage)
+            # End of main simulation calculation
 
-                        # Adjust damage chance to module being burnt out
-                        damage_chance *= chance_statistic.chance_under(40)
+            if self.modules[0].ending_cycle_at(tick): # Only display if slot 1 cycles
+                print(f"Tick: {tick:04d}, Rack Heat: {rack_heat:.3f}", end="    ")
+                print(f"Cycle: {floor(tick / self.modules[0].cycle_time)}", end="    ")
 
-                        chance_statistic.add(damage_chance, module.heat_damage)
+                # Display some specific readout for slot 1
+                print(f"Slot 1 chance of 2.5 HP damage {chance_statistics[0].chance_over(2.5) * 100:.3f}%", end="    ")
+                print(f"Slot 1 chance of 5 HP damage {chance_statistics[0].chance_over(5) * 100:.3f}%", end="    ")
+                print(f"Slot 1 chance of 7.5 HP damage {chance_statistics[0].chance_over(7.5) * 100:.3f}%", end="    ")
+                print(f"Slot 1 chance of 10 HP damage {chance_statistics[0].chance_over(10) * 100:.3f}%", end="    ")
 
-            # Display some basic readout
-            for chance_position, chance_statistic in enumerate(chance_statistics):
-                print(f"Slot {chance_position + 1}: Alive for {chance_statistic.chance_under(40) * 100:.1f}%", end=" ")
-            print()  # Newline
+                for chance_position, chance_statistic in enumerate(chance_statistics):
+                    print(f"Slot {chance_position + 1} alive chance {chance_statistic.chance_under(40) * 100:.1f}%", end="    ")
+                print()  # Newline
 
 
 module1 = Module()
-module1.set_activity([(0, 200)])
+module1.set_activity([(0, 500)])
 
 module2 = Module()
-module2.set_activity([(0, 200)])
+module2.set_activity([])
 
-rack = Rack([module1, module2])
+module3 = Module()
+module3.set_activity([])
+
+module4 = Module()
+module4.set_activity([])
+
+rack = Rack([module1, module2, module3, module4])
 rack.simulate()
