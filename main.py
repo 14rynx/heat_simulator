@@ -47,8 +47,9 @@ class Module:
 class DiscreteChance:
     """Represents the Chances on one discrete variable"""
 
-    def __init__(self):
+    def __init__(self, max_level=40):
         self.points = {0: 1}
+        self.max_level = max_level
 
     def add(self, transition_chance, transition_amount):
         """Adds one transition with a chance and amount to the Statistic"""
@@ -58,7 +59,7 @@ class DiscreteChance:
             remain_level = current_level
 
             switch_chance = current_chance * transition_chance
-            switch_level = current_level + transition_amount
+            switch_level = min(current_level + transition_amount, self.max_level)
 
             if remain_level in new_points:
                 new_points[remain_level] += remain_chance
@@ -139,8 +140,8 @@ class Rack:
 
             # Display some basic readout
             for chance_position, chance_statistic in enumerate(chance_statistics):
-                print(f"Slot {chance_position + 1}: Alive for {chance_statistic.chance_under(40)* 100:.1f}%", end=" ")
-            print() # Newline
+                print(f"Slot {chance_position + 1}: Alive for {chance_statistic.chance_under(40) * 100:.1f}%", end=" ")
+            print()  # Newline
 
 
 module1 = Module()
