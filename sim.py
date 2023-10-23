@@ -1,31 +1,38 @@
-from math import ceil, floor, exp
+from math import ceil, exp
 
 
 class Module:
-    """Just a simple dataclass, data might come from another source like pyfa"""
+    """Holds all data related to one in-game module.
+    It's heat related values, cycle time as well as when in the simulation it is active = overheated"""
 
     def __init__(self, hp=40, heat_damage=2.7, heat_generation=0.01, cycle_time=3.75):
         self.hp = hp
         self.heat_damage = heat_damage
         self.heat_generation = heat_generation
         self.cycle_time = cycle_time
-        self.pairs = None
+        self.pairs = []
 
-    def set_activity(self, pairs=None):
+    def set_green(self, pairs=None):
         if not pairs:
             pairs = []
 
         self.pairs = pairs
 
-    def active_at(self, tick):
+    def green_at(self, tick):
         for start, end in self.pairs:
             if start <= tick <= end:
                 return True
         return False
 
+    def active_at(self, tick):
+        for start, end in self.pairs:
+            if start <= tick <= self.cycle_time * ceil(end / self.cycle_time):
+                return True
+        return False
+
     def ending_cycle_at(self, tick):
         for start, end in self.pairs:
-            if start <= tick <= end:
+            if start + 1 <= tick <= self.cycle_time * ceil(end / self.cycle_time):
                 cycle_end = (tick - start) % self.cycle_time
                 return cycle_end < 1
         return False
@@ -33,13 +40,27 @@ class Module:
     @property
     def last_activity(self):
         if len(self.pairs) > 0:
-            return self.pairs[-1][1] + 1
+            return int(ceil(self.pairs[-1][1])) + 1
         else:
             return 0
 
 
 class DiscreteChance:
-    """Represents the Chances on one discrete variable"""
+    """Represents the chances on one discrete variable.
+
+       E.g. if you play a game with a six sided dice,
+       where you are out if you roll two times six,
+       that might be modeled as following:
+
+       Every time you roll, you get a 1 in 6 chance of getting a strike,
+       two strikes and you are out. Now to calculate this chance after n rolls,
+       you would do
+
+       d = DiscreteChance(max_level=2) # we are interested in max 2 strikes, anything higher can be lumped together
+       for roll_nr in range(rolls):
+           d.add(1 / 6, 1) # With the chance of 1/6 add a strike
+           print(d.chance_under(2)) # Print the chance that you are still under two strikes total
+    """
 
     def __init__(self, max_level=40):
         self.points = {0: 1}
@@ -67,11 +88,17 @@ class DiscreteChance:
 
         self.points = new_points
 
-    def chance_under(self, value):
-        return sum([chance for level, chance in self.points.items() if level < value])
+    def chance_under(self, level):
+        """Returns the probability that the level is under some level."""
+        return sum([c for l, c in self.points.items() if l < level])
 
-    def chance_over(self, value):
-        return sum([chance for level, chance in self.points.items() if level > value])
+    def chance_over(self, level):
+        """Returns the probability that the level is over some level."""
+        return sum([c for l, c in self.points.items() if l > level])
+
+    def expected(self):
+        """Returns the expected damage value."""
+        return sum([l * c for l, c in self.points.items()])
 
     def __str__(self):
         ret = []
@@ -100,7 +127,7 @@ class Rack:
         else:
             self.attenuation = attenuation
 
-    def simulate(self):
+    def simulate(self, print_callback=None):
         rack_heat = self.start_rack_heat
         chance_statistics = [DiscreteChance() for _ in range(self.slots)]
 
@@ -140,32 +167,5 @@ class Rack:
                             chance_statistic.add(damage_chance, module.heat_damage)
             # End of main simulation calculation
 
-            if self.modules[0].ending_cycle_at(tick): # Only display if slot 1 cycles
-                print(f"Tick: {tick:04d}, Rack Heat: {rack_heat:.3f}", end="    ")
-                print(f"Cycle: {floor(tick / self.modules[0].cycle_time)}", end="    ")
-
-                # Display some specific readout for slot 1
-                print(f"Slot 1 chance of 2.5 HP damage {chance_statistics[0].chance_over(2.5) * 100:.3f}%", end="    ")
-                print(f"Slot 1 chance of 5 HP damage {chance_statistics[0].chance_over(5) * 100:.3f}%", end="    ")
-                print(f"Slot 1 chance of 7.5 HP damage {chance_statistics[0].chance_over(7.5) * 100:.3f}%", end="    ")
-                print(f"Slot 1 chance of 10 HP damage {chance_statistics[0].chance_over(10) * 100:.3f}%", end="    ")
-
-                for chance_position, chance_statistic in enumerate(chance_statistics):
-                    print(f"Slot {chance_position + 1} alive chance {chance_statistic.chance_under(40) * 100:.1f}%", end="    ")
-                print()  # Newline
-
-
-module1 = Module()
-module1.set_activity([(0, 500)])
-
-module2 = Module()
-module2.set_activity([])
-
-module3 = Module()
-module3.set_activity([])
-
-module4 = Module()
-module4.set_activity([])
-
-rack = Rack([module1, module2, module3, module4])
-rack.simulate()
+            if print_callback:
+                print_callback(tick, rack_heat, chance_statistics)
